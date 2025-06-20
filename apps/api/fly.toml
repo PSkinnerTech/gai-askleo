@@ -1,32 +1,33 @@
+# fly.toml app configuration file generated for askleo-api on 2025-06-20T12:34:16Z
+#
+# See https://fly.io/docs/reference/configuration/ for information about how to use this file.
+#
 
-app = "askleo-api"
-primary_region = "lax"
+app = 'askleo-api'
+primary_region = 'lax'
 
 [build]
 
 [env]
-  HOST = "0.0.0.0"
-  PORT = "8080"
+  HOST = '0.0.0.0'
+  PORT = '8080'
 
 [http_service]
   internal_port = 8080
   force_https = true
-  auto_stop_machines = true
+  auto_stop_machines = 'stop'
   auto_start_machines = true
   min_machines_running = 0
-  processes = ["app"]
+  processes = ['app']
 
-[[http_service.checks]]
-  interval = "10s"
-  timeout = "2s"
-  grace_period = "5s"
-  method = "GET"
-  path = "/health"
-
-[deploy]
-  release_command = "npm run build"
+  [[http_service.checks]]
+    interval = '10s'
+    timeout = '2s'
+    grace_period = '5s'
+    method = 'GET'
+    path = '/health'
 
 [[vm]]
-  cpu_kind = "shared"
+  cpu_kind = 'shared'
   cpus = 1
   memory_mb = 512

@@ -1,25 +1,14 @@
-
-FROM node:20-alpine AS base
-
-# Install dependencies only when needed
-FROM base AS deps
+# 1. Builder stage: Install all dependencies, copy source, and build the app
+FROM node:20-alpine AS builder
+WORKDIR /app
 RUN apk add --no-cache libc6-compat
-WORKDIR /app
-
-# Copy package files
 COPY package*.json ./
-RUN npm ci --only=production
-
-# Rebuild the source code only when needed
-FROM base AS builder
-WORKDIR /app
+RUN npm ci
 COPY . .
-COPY --from=deps /app/node_modules ./node_modules
-
 RUN npm run build
 
-# Production image, copy all the files and run the app
-FROM base AS runner
+# 2. Runner stage: Create a lean production image
+FROM node:20-alpine AS runner
 WORKDIR /app
 
 ENV NODE_ENV production
@@ -27,8 +16,12 @@ ENV NODE_ENV production
 RUN addgroup --system --gid 1001 nodejs
 RUN adduser --system --uid 1001 askleo
 
+# Copy production dependencies and package.json
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+# Copy built app and start script from builder stage
 COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
 
 USER askleo

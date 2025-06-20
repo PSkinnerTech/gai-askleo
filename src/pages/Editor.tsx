@@ -1,5 +1,4 @@
-
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { Header } from "@/components/layout/header";
 import { Button } from "@/components/ui/button";
@@ -31,45 +30,104 @@ interface Document {
 }
 
 interface Suggestion {
-  id: string;
-  type: 'grammar' | 'spelling' | 'style';
-  range: { start: number; end: number };
-  replacement: string;
-  original: string;
+  type: 'suggestion';
+  payload: {
+    id: string;
+    type: 'grammar' | 'spelling' | 'style';
+    range: { start: number; end: number };
+    replacement: string;
+    original: string;
+  }
 }
 
 export default function Editor() {
   const { docId } = useParams<{ docId: string }>();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, session } = useAuth();
   const [document, setDocument] = useState<Document | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [mockSuggestions] = useState<Suggestion[]>([
-    {
-      id: "1",
-      type: "grammar",
-      range: { start: 45, end: 52 },
-      replacement: "patient's",
-      original: "patients"
-    },
-    {
-      id: "2", 
-      type: "style",
-      range: { start: 98, end: 115 },
-      replacement: "presented with",
-      original: "came in with"
-    }
-  ]);
+  const [suggestions, setSuggestions] = useState<Suggestion['payload'][]>([]);
+  const ws = useRef<WebSocket | null>(null);
 
   useEffect(() => {
     if (docId && user) {
       fetchDocument();
     }
   }, [docId, user]);
+  
+  useEffect(() => {
+    if (!session || !docId) return;
+
+    const wsUrl = `wss://askleo-api.fly.dev/suggest?token=${session.access_token}`;
+    ws.current = new WebSocket(wsUrl);
+
+    ws.current.onopen = () => {
+      console.log("WebSocket connection established");
+      setSuggestions([]);
+      if (ws.current?.readyState === WebSocket.OPEN && content && docId) {
+        const message = {
+          type: "analyzeText",
+          docId: docId,
+          text: content,
+        };
+        ws.current.send(JSON.stringify(message));
+      }
+    };
+
+    ws.current.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data) as Suggestion;
+        if (message.type === 'suggestion') {
+          setSuggestions(prev => {
+            if (!prev.find(s => s.id === message.payload.id)) {
+              return [...prev, message.payload];
+            }
+            return prev;
+          });
+        }
+      } catch (error) {
+        console.error("Error parsing WebSocket message:", error);
+      }
+    };
+
+    ws.current.onerror = (error) => {
+      console.error("WebSocket error:", error);
+      toast({
+        title: "Connection Error",
+        description: "Could not connect to the suggestions service.",
+        variant: "destructive",
+      });
+    };
+
+    ws.current.onclose = () => {
+      console.log("WebSocket connection closed");
+    };
+
+    return () => {
+      ws.current?.close();
+    };
+  }, [session, docId, content]);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      if (ws.current?.readyState === WebSocket.OPEN && content && docId) {
+        const message = {
+          type: "analyzeText",
+          docId: docId,
+          text: content,
+        };
+        ws.current.send(JSON.stringify(message));
+      }
+    }, 500);
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [content, docId]);
 
   const fetchDocument = async () => {
     if (!docId) return;
@@ -120,7 +178,6 @@ export default function Editor() {
         description: "Your changes have been saved successfully.",
       });
 
-      // Update local document state
       setDocument(prev => prev ? {
         ...prev,
         title: title || "Untitled Document",
@@ -222,7 +279,7 @@ export default function Editor() {
                   onClick={() => setShowSuggestions(!showSuggestions)}
                   className="border-[var(--color-muted-border)]"
                 >
-                  Suggestions ({mockSuggestions.length})
+                  Suggestions ({suggestions.length})
                 </Button>
                 
                 <Button
@@ -255,7 +312,9 @@ export default function Editor() {
             <div className="max-w-4xl mx-auto">
               <Textarea
                 value={content}
-                onChange={(e) => setContent(e.target.value)}
+                onChange={(e) => {
+                  setContent(e.target.value)
+                }}
                 placeholder="Start writing your medical document..."
                 className="min-h-[600px] border-none shadow-none resize-none focus-visible:ring-0 text-base leading-relaxed bg-transparent"
               />
@@ -282,7 +341,7 @@ export default function Editor() {
             </div>
             
             <div className="p-4 space-y-4">
-              {mockSuggestions.map((suggestion) => (
+              {suggestions.map((suggestion) => (
                 <Card key={suggestion.id} className="border-[var(--color-muted-border)]">
                   <CardHeader className="pb-3">
                     <div className="flex items-center gap-2">
@@ -330,7 +389,7 @@ export default function Editor() {
                 </Card>
               ))}
               
-              {mockSuggestions.length === 0 && (
+              {suggestions.length === 0 && (
                 <div className="text-center py-8">
                   <CheckCircle className="h-8 w-8 text-[var(--color-accent)] mx-auto mb-2" />
                   <p className="text-sm text-[var(--color-text-secondary)]">
