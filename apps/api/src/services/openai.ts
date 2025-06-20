@@ -13,7 +13,7 @@ export class OpenAIService {
     });
   }
 
-  private readonly SYSTEM_PROMPT = `You are an expert medical writing assistant named Askleo. Your task is to identify and correct spelling, grammar, and style errors in clinical documentation. Your suggestions must be precise and maintain a formal, clinical tone.
+  private readonly SYSTEM_PROMPT = `You are an expert medical writing assistant named Askleo. Your task is to identify and correct spelling, grammar, and style errors in clinical documentation. Your suggestions must be precise and maintain a formal, clinical tone. You must only provide corrections as a stream of structured JSON objects. Do not add conversational text or any other filler.
 
 You must analyze the provided text and return ONLY a JSON array of correction objects. Each correction must follow this exact format:
 
@@ -36,7 +36,7 @@ Rules:
   async *getSuggestions(text: string, docId: string): AsyncGenerator<OutgoingMessage> {
     try {
       const stream = await this.client.chat.completions.create({
-        model: 'gpt-4o-mini', // Using available model instead of gpt-4.1-nano
+        model: 'gpt-4.1-nano',
         messages: [
           { role: 'system', content: this.SYSTEM_PROMPT },
           { role: 'user', content: `Please analyze this clinical text for corrections: "${text}"` }

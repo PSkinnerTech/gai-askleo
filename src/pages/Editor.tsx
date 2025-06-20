@@ -33,10 +33,10 @@ interface Suggestion {
   type: 'suggestion';
   payload: {
     id: string;
-    type: 'grammar' | 'spelling' | 'style';
-    range: { start: number; end: number };
+    range: { from: number; to: number };
     replacement: string;
-    original: string;
+    rule: 'Spelling' | 'Grammar' | 'Style';
+    explanation: string;
   }
 }
 
@@ -62,25 +62,19 @@ export default function Editor() {
   useEffect(() => {
     if (!session || !docId) return;
 
-    const wsUrl = `wss://askleo-api.fly.dev/suggest?token=${session.access_token}`;
+    // Connect to your deployed API endpoint
+    const wsUrl = `wss://askleo-api.fly.dev/suggest`;
     ws.current = new WebSocket(wsUrl);
 
     ws.current.onopen = () => {
       console.log("WebSocket connection established");
       setSuggestions([]);
-      if (ws.current?.readyState === WebSocket.OPEN && content && docId) {
-        const message = {
-          type: "analyzeText",
-          docId: docId,
-          text: content,
-        };
-        ws.current.send(JSON.stringify(message));
-      }
     };
 
     ws.current.onmessage = (event) => {
       try {
-        const message = JSON.parse(event.data) as Suggestion;
+        const message = JSON.parse(event.data) as Suggestion | { type: 'error' | 'complete', payload: { message: string } };
+        
         if (message.type === 'suggestion') {
           setSuggestions(prev => {
             if (!prev.find(s => s.id === message.payload.id)) {
@@ -88,6 +82,15 @@ export default function Editor() {
             }
             return prev;
           });
+        } else if (message.type === 'error') {
+          console.error("Suggestion error:", message.payload.message);
+          toast({
+            title: "Analysis Error",
+            description: message.payload.message,
+            variant: "destructive",
+          });
+        } else if (message.type === 'complete') {
+          console.log("Analysis complete");
         }
       } catch (error) {
         console.error("Error parsing WebSocket message:", error);
@@ -103,24 +106,32 @@ export default function Editor() {
       });
     };
 
-    ws.current.onclose = () => {
-      console.log("WebSocket connection closed");
+    ws.current.onclose = (event) => {
+      console.log("WebSocket connection closed", event.code, event.reason);
+      if (event.code === 1008) {
+        toast({
+          title: "Authentication Error",
+          description: "Please refresh the page and try again.",
+          variant: "destructive",
+        });
+      }
     };
 
     return () => {
       ws.current?.close();
     };
-  }, [session, docId, content]);
+  }, [session, docId]);
 
   useEffect(() => {
     const handler = setTimeout(() => {
       if (ws.current?.readyState === WebSocket.OPEN && content && docId) {
+        // Send message in the format expected by the API
         const message = {
-          type: "analyzeText",
           docId: docId,
           text: content,
         };
         ws.current.send(JSON.stringify(message));
+        setSuggestions([]); // Clear previous suggestions
       }
     }, 500);
 
@@ -203,6 +214,25 @@ export default function Editor() {
       case "EHR Addendum": return "bg-purple-100 text-purple-800 dark:bg-purple-900 dark:text-purple-300";
       default: return "bg-gray-100 text-gray-800 dark:bg-gray-900 dark:text-gray-300";
     }
+  };
+
+  const applySuggestion = (suggestion: Suggestion['payload']) => {
+    const newContent = content.slice(0, suggestion.range.from) + 
+                      suggestion.replacement + 
+                      content.slice(suggestion.range.to);
+    setContent(newContent);
+    
+    // Remove the applied suggestion
+    setSuggestions(prev => prev.filter(s => s.id !== suggestion.id));
+    
+    toast({
+      title: "Suggestion applied",
+      description: "The text has been updated.",
+    });
+  };
+
+  const dismissSuggestion = (suggestionId: string) => {
+    setSuggestions(prev => prev.filter(s => s.id !== suggestionId));
   };
 
   if (loading) {
@@ -312,9 +342,7 @@ export default function Editor() {
             <div className="max-w-4xl mx-auto">
               <Textarea
                 value={content}
-                onChange={(e) => {
-                  setContent(e.target.value)
-                }}
+                onChange={(e) => setContent(e.target.value)}
                 placeholder="Start writing your medical document..."
                 className="min-h-[600px] border-none shadow-none resize-none focus-visible:ring-0 text-base leading-relaxed bg-transparent"
               />
@@ -345,17 +373,17 @@ export default function Editor() {
                 <Card key={suggestion.id} className="border-[var(--color-muted-border)]">
                   <CardHeader className="pb-3">
                     <div className="flex items-center gap-2">
-                      {suggestion.type === 'grammar' && (
+                      {suggestion.rule === 'Grammar' && (
                         <div className="w-3 h-3 rounded-full bg-[var(--color-accent)]" />
                       )}
-                      {suggestion.type === 'spelling' && (
+                      {suggestion.rule === 'Spelling' && (
                         <AlertCircle className="h-3 w-3 text-[var(--color-danger)]" />
                       )}
-                      {suggestion.type === 'style' && (
+                      {suggestion.rule === 'Style' && (
                         <div className="w-3 h-3 rounded-full bg-[var(--color-primary)]" />
                       )}
                       <span className="text-sm font-medium capitalize text-[var(--color-text-primary)]">
-                        {suggestion.type}
+                        {suggestion.rule}
                       </span>
                     </div>
                   </CardHeader>
@@ -364,7 +392,7 @@ export default function Editor() {
                       <div className="text-sm">
                         <div className="text-[var(--color-text-secondary)] mb-1">Original:</div>
                         <code className="bg-red-100 dark:bg-red-900/20 px-2 py-1 rounded text-red-800 dark:text-red-300">
-                          {suggestion.original}
+                          {content.slice(suggestion.range.from, suggestion.range.to)}
                         </code>
                       </div>
                       
@@ -375,12 +403,25 @@ export default function Editor() {
                         </code>
                       </div>
                       
+                      <div className="text-xs text-[var(--color-text-secondary)]">
+                        {suggestion.explanation}
+                      </div>
+                      
                       <div className="flex gap-2">
-                        <Button size="sm" className="flex-1 bg-[var(--color-accent)] hover:bg-[var(--color-accent)]/90">
+                        <Button 
+                          size="sm" 
+                          className="flex-1 bg-[var(--color-accent)] hover:bg-[var(--color-accent)]/90"
+                          onClick={() => applySuggestion(suggestion)}
+                        >
                           <CheckCircle className="h-3 w-3 mr-1" />
                           Accept
                         </Button>
-                        <Button size="sm" variant="outline" className="flex-1">
+                        <Button 
+                          size="sm" 
+                          variant="outline" 
+                          className="flex-1"
+                          onClick={() => dismissSuggestion(suggestion.id)}
+                        >
                           Ignore
                         </Button>
                       </div>

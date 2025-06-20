@@ -12,7 +12,7 @@ export async function websocketRoutes(fastify: FastifyInstance) {
     fastify.get('/suggest', { websocket: true }, async (connection, req) => {
       console.log('WebSocket connection attempt');
 
-      // Extract and validate JWT token
+      // Extract and validate JWT token from headers
       const token = authService.extractTokenFromHeaders(req.headers);
       if (!token) {
         console.log('No token provided');
@@ -54,7 +54,7 @@ export async function websocketRoutes(fastify: FastifyInstance) {
           if (connection.socket.readyState === connection.socket.OPEN) {
             connection.socket.send(JSON.stringify({
               type: 'error',
-              payload: { message: 'Invalid message format' }
+              payload: { message: 'Invalid message format or processing error' }
             }));
           }
         }
