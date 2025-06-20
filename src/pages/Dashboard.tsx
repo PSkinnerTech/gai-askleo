@@ -125,11 +125,9 @@ export default function Dashboard() {
           
           <div className="flex items-center gap-3">
             <Select onValueChange={(value) => createNewDocument(value)}>
-              <SelectTrigger asChild>
-                <Button className="bg-[var(--color-primary)] hover:bg-[var(--color-primary)]/90">
-                  <Plus className="h-4 w-4 mr-2" />
-                  New Document
-                </Button>
+              <SelectTrigger className="bg-[var(--color-primary)] hover:bg-[var(--color-primary)]/90 text-white border-[var(--color-primary)]">
+                <Plus className="h-4 w-4 mr-2" />
+                <span>New Document</span>
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="SOAP">SOAP Note</SelectItem>
