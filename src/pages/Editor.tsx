@@ -51,7 +51,11 @@ export default function Editor() {
   const [content, setContent] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion['payload'][]>([]);
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('disconnected');
   const ws = useRef<WebSocket | null>(null);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const reconnectAttempts = useRef(0);
+  const maxReconnectAttempts = 5;
 
   useEffect(() => {
     if (docId && user) {
@@ -62,65 +66,101 @@ export default function Editor() {
   useEffect(() => {
     if (!session || !docId) return;
 
-    // Connect to your deployed API endpoint
-    const wsUrl = `wss://askleo-api.fly.dev/suggest`;
-    ws.current = new WebSocket(wsUrl);
-
-    ws.current.onopen = () => {
-      console.log("WebSocket connection established");
-      setSuggestions([]);
-    };
-
-    ws.current.onmessage = (event) => {
-      try {
-        const message = JSON.parse(event.data) as Suggestion | { type: 'error' | 'complete', payload: { message: string } };
-        
-        if (message.type === 'suggestion') {
-          setSuggestions(prev => {
-            if (!prev.find(s => s.id === message.payload.id)) {
-              return [...prev, message.payload];
-            }
-            return prev;
-          });
-        } else if (message.type === 'error') {
-          console.error("Suggestion error:", message.payload.message);
-          toast({
-            title: "Analysis Error",
-            description: message.payload.message,
-            variant: "destructive",
-          });
-        } else if (message.type === 'complete') {
-          console.log("Analysis complete");
-        }
-      } catch (error) {
-        console.error("Error parsing WebSocket message:", error);
-      }
-    };
-
-    ws.current.onerror = (error) => {
-      console.error("WebSocket error:", error);
-      toast({
-        title: "Connection Error",
-        description: "Could not connect to the suggestions service.",
-        variant: "destructive",
-      });
-    };
-
-    ws.current.onclose = (event) => {
-      console.log("WebSocket connection closed", event.code, event.reason);
-      if (event.code === 1008) {
-        toast({
-          title: "Authentication Error",
-          description: "Please refresh the page and try again.",
-          variant: "destructive",
-        });
-      }
-    };
+    connectWebSocket();
 
     return () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
       ws.current?.close();
     };
   }, [session, docId]);
+
+  const connectWebSocket = () => {
+    if (!session?.access_token) {
+      console.error('No access token available');
+      return;
+    }
+
+    try {
+      setConnectionStatus('connecting');
+      // Include the JWT token as a query parameter
+      const wsUrl = `wss://askleo-api.fly.dev/suggest?token=${encodeURIComponent(session.access_token)}`;
+      ws.current = new WebSocket(wsUrl);
+
+      ws.current.onopen = () => {
+        console.log("WebSocket connection established");
+        setConnectionStatus('connected');
+        setSuggestions([]);
+        reconnectAttempts.current = 0; // Reset reconnect attempts on successful connection
+      };
+
+      ws.current.onmessage = (event) => {
+        try {
+          const message = JSON.parse(event.data) as Suggestion | { type: 'error' | 'complete', payload: { message: string } };
+          
+          if (message.type === 'suggestion') {
+            setSuggestions(prev => {
+              if (!prev.find(s => s.id === message.payload.id)) {
+                return [...prev, message.payload];
+              }
+              return prev;
+            });
+          } else if (message.type === 'error') {
+            console.error("Suggestion error:", message.payload.message);
+            toast({
+              title: "Analysis Error",
+              description: message.payload.message,
+              variant: "destructive",
+            });
+          } else if (message.type === 'complete') {
+            console.log("Analysis complete");
+          }
+        } catch (error) {
+          console.error("Error parsing WebSocket message:", error);
+        }
+      };
+
+      ws.current.onerror = (error) => {
+        console.error("WebSocket error:", error);
+        setConnectionStatus('error');
+      };
+
+      ws.current.onclose = (event) => {
+        console.log("WebSocket connection closed", event.code, event.reason);
+        setConnectionStatus('disconnected');
+        
+        if (event.code === 1008) {
+          toast({
+            title: "Authentication Error",
+            description: "Please refresh the page and try again.",
+            variant: "destructive",
+          });
+          return;
+        }
+
+        // Attempt to reconnect with exponential backoff
+        if (reconnectAttempts.current < maxReconnectAttempts) {
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 30000);
+          console.log(`Attempting to reconnect in ${delay}ms (attempt ${reconnectAttempts.current + 1}/${maxReconnectAttempts})`);
+          
+          reconnectTimeoutRef.current = setTimeout(() => {
+            reconnectAttempts.current++;
+            connectWebSocket();
+          }, delay);
+        } else {
+          toast({
+            title: "Connection Lost",
+            description: "Unable to reconnect to the suggestions service. Please refresh the page.",
+            variant: "destructive",
+          });
+        }
+      };
+    } catch (error) {
+      console.error("Error creating WebSocket connection:", error);
+      setConnectionStatus('error');
+    }
+  };
 
   useEffect(() => {
     const handler = setTimeout(() => {
@@ -298,6 +338,22 @@ export default function Editor() {
                   <Clock className="h-3 w-3" />
                   <span>
                     Last saved {formatDistanceToNow(new Date(document.updated_at), { addSuffix: true })}
+                  </span>
+                </div>
+
+                {/* Connection Status Indicator */}
+                <div className="flex items-center gap-2 text-xs">
+                  <div className={`w-2 h-2 rounded-full ${
+                    connectionStatus === 'connected' ? 'bg-green-500' :
+                    connectionStatus === 'connecting' ? 'bg-yellow-500' :
+                    connectionStatus === 'error' ? 'bg-red-500' :
+                    'bg-gray-400'
+                  }`} />
+                  <span className="text-[var(--color-text-secondary)]">
+                    {connectionStatus === 'connected' ? 'Connected' :
+                     connectionStatus === 'connecting' ? 'Connecting...' :
+                     connectionStatus === 'error' ? 'Connection Error' :
+                     'Disconnected'}
                   </span>
                 </div>
               </div>

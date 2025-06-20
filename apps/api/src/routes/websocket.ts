@@ -12,10 +12,10 @@ export async function websocketRoutes(fastify: FastifyInstance) {
     fastify.get('/suggest', { websocket: true }, async (connection, req) => {
       console.log('WebSocket connection attempt');
 
-      // Extract and validate JWT token from headers
-      const token = authService.extractTokenFromHeaders(req.headers);
+      // Extract token from query parameters instead of headers
+      const token = req.query?.token as string;
       if (!token) {
-        console.log('No token provided');
+        console.log('No token provided in query parameters');
         connection.socket.close(1008, 'Authentication required');
         return;
       }
