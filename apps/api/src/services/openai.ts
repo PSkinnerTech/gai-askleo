@@ -1,4 +1,3 @@
-
 import OpenAI from 'openai';
 import { v4 as uuidv4 } from 'uuid';
 import { config } from '../config/index.js';
@@ -13,85 +12,111 @@ export class OpenAIService {
     });
   }
 
-  private readonly SYSTEM_PROMPT = `You are an expert medical writing assistant named Askleo. Your task is to identify and correct spelling, grammar, and style errors in clinical documentation. Your suggestions must be precise and maintain a formal, clinical tone. You must only provide corrections as a stream of structured JSON objects. Do not add conversational text or any other filler.
+  private readonly SYSTEM_PROMPT = `You are a precision-focused JSON API for medical text correction. Your sole function is to identify spelling, grammar, and style errors in a user-provided text and return a JSON object with a 'suggestions' array.
 
-You must analyze the provided text and return ONLY a JSON array of correction objects. Each correction must follow this exact format:
+You MUST adhere to the following rules:
+1.  Your entire response must be a single, valid JSON object. Do not include any text or markdown before or after the JSON.
+2.  The root object must have one key: "suggestions".
+3.  "suggestions" must be an array of correction objects.
+4.  Each correction object must have these keys: "range" (with "from" and "to" zero-indexed character offsets), "replacement" (the corrected text), "rule" (one of "Spelling", "Grammar", or "Style"), and a concise "explanation".
+5.  If no errors are found, return an empty array: {"suggestions": []}.
 
-[
-  {
-    "range": {"from": 10, "to": 20},
-    "replacement": "corrected text",
-    "rule": "Spelling|Grammar|Style",
-    "explanation": "Brief explanation of the correction"
-  }
-]
+Example:
+User text: "Pt states she hasnt been feeling rite for 3 days now. Complains of persistant fatigue, headak, and light diziness when standing."
+Your JSON response:
+{
+  "suggestions": [
+    {
+      "range": { "from": 12, "to": 18 },
+      "replacement": "hasn't",
+      "rule": "Spelling",
+      "explanation": "Corrected contraction."
+    },
+    {
+      "range": { "from": 32, "to": 36 },
+      "replacement": "right",
+      "rule": "Spelling",
+      "explanation": "Corrected spelling of 'right'."
+    },
+    {
+      "range": { "from": 65, "to": 75 },
+      "replacement": "persistent",
+      "rule": "Spelling",
+      "explanation": "Corrected spelling of 'persistent'."
+    },
+    {
+      "range": { "from": 85, "to": 91 },
+      "replacement": "headache",
+      "rule": "Spelling",
+      "explanation": "Corrected spelling of 'headache'."
+    },
+    {
+      "range": { "from": 102, "to": 109 },
+      "replacement": "dizziness",
+      "rule": "Spelling",
+      "explanation": "Corrected spelling of 'dizziness'."
+    }
+  ]
+}`;
 
-Rules:
-- Only suggest corrections that improve clinical accuracy or clarity
-- Maintain medical terminology and formal clinical tone
-- Focus on spelling errors, grammatical mistakes, and style improvements
-- Return empty array [] if no corrections are needed
-- Do not include any other text or formatting`;
+  async getSuggestions(text: string): Promise<OutgoingMessage[]> {
+    if (!text.trim()) {
+      return [];
+    }
 
-  async *getSuggestions(text: string, docId: string): AsyncGenerator<OutgoingMessage> {
+    console.log("----- Sending to OpenAI -----");
+    console.log("Text:", text);
+
     try {
-      const stream = await this.client.chat.completions.create({
-        model: 'gpt-4.1-nano',
+      const response = await this.client.chat.completions.create({
+        model: 'gpt-4o-mini',
         messages: [
           { role: 'system', content: this.SYSTEM_PROMPT },
-          { role: 'user', content: `Please analyze this clinical text for corrections: "${text}"` }
+          { role: 'user', content: text }
         ],
-        stream: true,
-        temperature: 0.1,
-        max_tokens: 1000,
+        temperature: 0,
+        response_format: { type: "json_object" },
       });
 
-      let accumulatedContent = '';
+      console.log("----- OpenAI Raw Response -----");
+      console.log(JSON.stringify(response, null, 2));
 
-      for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || '';
-        if (content) {
-          accumulatedContent += content;
-          
-          // Try to parse accumulated content as JSON
-          try {
-            const suggestions = JSON.parse(accumulatedContent);
-            if (Array.isArray(suggestions)) {
-              // Valid suggestions array received
-              for (const suggestion of suggestions) {
-                const payload: SuggestionPayload = {
-                  id: uuidv4(),
-                  range: suggestion.range,
-                  replacement: suggestion.replacement,
-                  rule: suggestion.rule,
-                  explanation: suggestion.explanation,
-                };
+      const content = response.choices[0]?.message?.content;
+      if (!content) {
+        console.error("!!! OpenAI response content is null or empty.");
+        return [];
+      }
+      
+      console.log("----- OpenAI Parsed Content -----");
+      console.log(content);
 
-                yield {
-                  type: 'suggestion',
-                  payload,
-                };
-              }
-              break; // Exit after processing valid suggestions
-            }
-          } catch {
-            // Continue accumulating if JSON is not complete yet
-            continue;
-          }
-        }
+      const parsed = JSON.parse(content);
+      const suggestions: any[] = parsed.suggestions || [];
+
+      if (!Array.isArray(suggestions)) {
+        console.error("!!! AI response did not contain a 'suggestions' array:", parsed);
+        return [];
       }
 
-      yield {
-        type: 'complete',
-        payload: { message: 'Analysis complete' },
-      };
+      console.log(`Found ${suggestions.length} suggestions.`);
+
+      return suggestions.map((suggestion): OutgoingMessage => ({
+        type: 'suggestion',
+        payload: {
+          id: uuidv4(),
+          range: suggestion.range,
+          replacement: suggestion.replacement,
+          rule: suggestion.rule,
+          explanation: suggestion.explanation,
+        },
+      }));
 
     } catch (error) {
-      console.error('OpenAI API error:', error);
-      yield {
+      console.error('!!! OpenAI API error:', error);
+      return [{
         type: 'error',
-        payload: { message: 'Failed to analyze text' },
-      };
+        payload: { message: 'Failed to analyze text due to an API error.' },
+      }];
     }
   }
 }

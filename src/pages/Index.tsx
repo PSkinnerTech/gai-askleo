@@ -1,4 +1,3 @@
-
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -16,6 +15,7 @@ import {
   Clock
 } from "lucide-react";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
+import { useEffect } from "react";
 
 const features = [
   {
@@ -51,17 +51,18 @@ export default function Index() {
   const navigate = useNavigate();
   const { user, loading } = useAuth();
 
-  if (loading) {
+  useEffect(() => {
+    if (user) {
+      navigate("/dashboard");
+    }
+  }, [user, navigate]);
+
+  if (loading || user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[var(--color-background)]">
         <div className="text-[var(--color-text-primary)]">Loading...</div>
       </div>
     );
-  }
-
-  if (user) {
-    navigate("/dashboard");
-    return null;
   }
 
   return (

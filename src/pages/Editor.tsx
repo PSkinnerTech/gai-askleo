@@ -40,10 +40,47 @@ interface Suggestion {
   }
 }
 
+interface Selection {
+  from: number;
+  to: number;
+  text: string;
+}
+
+function highlightSuggestions(content: string, suggestions: Suggestion['payload'][]) {
+  let lastIndex = 0;
+  const parts = [];
+  
+  // Sort suggestions by their start index to process them in order
+  const sortedSuggestions = [...suggestions].sort((a, b) => a.range.from - b.range.from);
+
+  sortedSuggestions.forEach(suggestion => {
+    // Add the text before the current suggestion
+    if (suggestion.range.from > lastIndex) {
+      parts.push(content.slice(lastIndex, suggestion.range.from));
+    }
+    // Add the highlighted suggestion
+    parts.push(
+      `<span class="suggestion-underline ${suggestion.rule.toLowerCase()}">` +
+      content.slice(suggestion.range.from, suggestion.range.to) +
+      `</span>`
+    );
+    lastIndex = suggestion.range.to;
+  });
+
+  // Add the remaining text after the last suggestion
+  if (lastIndex < content.length) {
+    parts.push(content.slice(lastIndex));
+  }
+
+  return { __html: parts.join('') };
+}
+
 export default function Editor() {
   const { docId } = useParams<{ docId: string }>();
   const navigate = useNavigate();
   const { user, session } = useAuth();
+  const sessionRef = useRef(session);
+  sessionRef.current = session;
   const [document, setDocument] = useState<Document | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -51,8 +88,11 @@ export default function Editor() {
   const [content, setContent] = useState("");
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion['payload'][]>([]);
+  const [currentSelection, setCurrentSelection] = useState<Selection | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected' | 'error'>('disconnected');
   const ws = useRef<WebSocket | null>(null);
+  const editorRef = useRef<HTMLDivElement>(null);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttempts = useRef(0);
   const maxReconnectAttempts = 5;
@@ -64,7 +104,7 @@ export default function Editor() {
   }, [docId, user]);
   
   useEffect(() => {
-    if (!session || !docId) return;
+    if (!docId || !user) return;
 
     connectWebSocket();
 
@@ -74,10 +114,39 @@ export default function Editor() {
       }
       ws.current?.close();
     };
-  }, [session, docId]);
+  }, [docId, user]);
+
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      if (ws.current?.readyState === WebSocket.OPEN && content && docId) {
+        const message = {
+          docId: docId,
+          text: content,
+        };
+        console.log("Sending message to server:", message);
+        ws.current.send(JSON.stringify(message));
+      }
+    }, 1000); // 1-second debounce
+
+    return () => {
+      clearTimeout(handler);
+    };
+  }, [content, docId]);
+  
+  useEffect(() => {
+    // Programmatically update the editor's innerHTML with highlights
+    if (editorRef.current) {
+      const highlightedHTML = highlightSuggestions(content, suggestions).__html;
+      if (editorRef.current.innerHTML !== highlightedHTML) {
+        // This update will not trigger the onInput event
+        editorRef.current.innerHTML = highlightedHTML;
+      }
+    }
+  }, [content, suggestions]);
 
   const connectWebSocket = () => {
-    if (!session?.access_token) {
+    const currentSession = sessionRef.current;
+    if (!currentSession?.access_token) {
       console.error('No access token available');
       return;
     }
@@ -85,7 +154,7 @@ export default function Editor() {
     try {
       setConnectionStatus('connecting');
       // Include the JWT token as a query parameter
-      const wsUrl = `wss://askleo-api.fly.dev/suggest?token=${encodeURIComponent(session.access_token)}`;
+      const wsUrl = `wss://askleo-api.fly.dev/suggest?token=${encodeURIComponent(currentSession.access_token)}`;
       ws.current = new WebSocket(wsUrl);
 
       ws.current.onopen = () => {
@@ -113,11 +182,14 @@ export default function Editor() {
               description: message.payload.message,
               variant: "destructive",
             });
+            setIsAnalyzing(false);
           } else if (message.type === 'complete') {
             console.log("Analysis complete");
+            setIsAnalyzing(false);
           }
         } catch (error) {
           console.error("Error parsing WebSocket message:", error);
+          setIsAnalyzing(false);
         }
       };
 
@@ -162,23 +234,21 @@ export default function Editor() {
     }
   };
 
-  useEffect(() => {
-    const handler = setTimeout(() => {
-      if (ws.current?.readyState === WebSocket.OPEN && content && docId) {
-        // Send message in the format expected by the API
-        const message = {
-          docId: docId,
-          text: content,
-        };
-        ws.current.send(JSON.stringify(message));
-        setSuggestions([]); // Clear previous suggestions
-      }
-    }, 500);
-
-    return () => {
-      clearTimeout(handler);
-    };
-  }, [content, docId]);
+  const handleSelection = (e: React.MouseEvent<HTMLDivElement>) => {
+    const selection = window.getSelection();
+    if (selection && selection.rangeCount > 0 && !selection.isCollapsed) {
+      const range = selection.getRangeAt(0);
+      const text = selection.toString();
+      
+      // Note: This range is relative to the DOM, not a simple string index.
+      // For a contentEditable div, a more complex mapping would be needed
+      // to get precise start/end indices if we needed to send a fragment.
+      // For now, we analyze the whole text on any selection.
+      setCurrentSelection({ from: 0, to: text.length, text });
+    } else {
+      setCurrentSelection(null);
+    }
+  };
 
   const fetchDocument = async () => {
     if (!docId) return;
@@ -256,14 +326,26 @@ export default function Editor() {
     }
   };
 
+  const analyzeSelection = () => {
+    if (!currentSelection || ws.current?.readyState !== WebSocket.OPEN || !docId) {
+      return;
+    }
+    const message = {
+      docId,
+      text: currentSelection.text,
+    };
+    setIsAnalyzing(true);
+    setSuggestions([]);
+    ws.current.send(JSON.stringify(message));
+    setShowSuggestions(true); // Automatically open suggestion panel
+  };
+
   const applySuggestion = (suggestion: Suggestion['payload']) => {
-    const newContent = content.slice(0, suggestion.range.from) + 
-                      suggestion.replacement + 
-                      content.slice(suggestion.range.to);
-    setContent(newContent);
+    const { from, to } = suggestion.range;
+    const newContent = content.slice(0, from) + suggestion.replacement + content.slice(to);
     
-    // Remove the applied suggestion
-    setSuggestions(prev => prev.filter(s => s.id !== suggestion.id));
+    setContent(newContent);
+    setSuggestions([]);
     
     toast({
       title: "Suggestion applied",
@@ -362,10 +444,10 @@ export default function Editor() {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setShowSuggestions(!showSuggestions)}
+                  onClick={currentSelection ? analyzeSelection : () => setShowSuggestions(!showSuggestions)}
                   className="border-[var(--color-muted-border)]"
                 >
-                  Suggestions ({suggestions.length})
+                  {currentSelection ? "Analyze Selection" : `Suggestions (${suggestions.length})`}
                 </Button>
                 
                 <Button
@@ -395,13 +477,15 @@ export default function Editor() {
 
           {/* Editor Content */}
           <div className="flex-1 px-6 py-6">
-            <div className="max-w-4xl mx-auto">
-              <Textarea
-                value={content}
-                onChange={(e) => setContent(e.target.value)}
-                placeholder="Start writing your medical document..."
-                className="min-h-[600px] border-none shadow-none resize-none focus-visible:ring-0 text-base leading-relaxed bg-transparent"
-              />
+            <div className="max-w-4xl mx-auto relative">
+              <div
+                ref={editorRef}
+                contentEditable
+                onInput={(e) => setContent(e.currentTarget.innerText)}
+                suppressContentEditableWarning={true}
+                className="min-h-[600px] border-none shadow-none resize-none focus-visible:ring-0 text-base leading-relaxed bg-transparent p-2 outline-none"
+              >
+              </div>
             </div>
           </div>
         </div>
@@ -425,68 +509,74 @@ export default function Editor() {
             </div>
             
             <div className="p-4 space-y-4">
-              {suggestions.map((suggestion) => (
-                <Card key={suggestion.id} className="border-[var(--color-muted-border)]">
-                  <CardHeader className="pb-3">
-                    <div className="flex items-center gap-2">
-                      {suggestion.rule === 'Grammar' && (
-                        <div className="w-3 h-3 rounded-full bg-[var(--color-accent)]" />
-                      )}
-                      {suggestion.rule === 'Spelling' && (
-                        <AlertCircle className="h-3 w-3 text-[var(--color-danger)]" />
-                      )}
-                      {suggestion.rule === 'Style' && (
-                        <div className="w-3 h-3 rounded-full bg-[var(--color-primary)]" />
-                      )}
-                      <span className="text-sm font-medium capitalize text-[var(--color-text-primary)]">
-                        {suggestion.rule}
-                      </span>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="pt-0">
-                    <div className="space-y-3">
-                      <div className="text-sm">
-                        <div className="text-[var(--color-text-secondary)] mb-1">Original:</div>
-                        <code className="bg-red-100 dark:bg-red-900/20 px-2 py-1 rounded text-red-800 dark:text-red-300">
-                          {content.slice(suggestion.range.from, suggestion.range.to)}
-                        </code>
+              {isAnalyzing ? (
+                <div className="text-center py-8">
+                  <p className="text-sm text-[var(--color-text-secondary)]">
+                    Analyzing your text...
+                  </p>
+                </div>
+              ) : suggestions.length > 0 ? (
+                suggestions.map((suggestion) => (
+                  <Card key={suggestion.id} className="border-[var(--color-muted-border)]">
+                    <CardHeader className="pb-3">
+                      <div className="flex items-center gap-2">
+                        {suggestion.rule === 'Grammar' && (
+                          <div className="w-3 h-3 rounded-full bg-[var(--color-accent)]" />
+                        )}
+                        {suggestion.rule === 'Spelling' && (
+                          <AlertCircle className="h-3 w-3 text-[var(--color-danger)]" />
+                        )}
+                        {suggestion.rule === 'Style' && (
+                          <div className="w-3 h-3 rounded-full bg-[var(--color-primary)]" />
+                        )}
+                        <span className="text-sm font-medium capitalize text-[var(--color-text-primary)]">
+                          {suggestion.rule}
+                        </span>
                       </div>
-                      
-                      <div className="text-sm">
-                        <div className="text-[var(--color-text-secondary)] mb-1">Suggested:</div>
-                        <code className="bg-green-100 dark:bg-green-900/20 px-2 py-1 rounded text-green-800 dark:text-green-300">
-                          {suggestion.replacement}
-                        </code>
+                    </CardHeader>
+                    <CardContent className="pt-0">
+                      <div className="space-y-3">
+                        <div className="text-sm">
+                          <div className="text-[var(--color-text-secondary)] mb-1">Original:</div>
+                          <code className="bg-red-100 dark:bg-red-900/20 px-2 py-1 rounded text-red-800 dark:text-red-300">
+                            {content.slice(suggestion.range.from, suggestion.range.to)}
+                          </code>
+                        </div>
+                        
+                        <div className="text-sm">
+                          <div className="text-[var(--color-text-secondary)] mb-1">Suggested:</div>
+                          <code className="bg-green-100 dark:bg-green-900/20 px-2 py-1 rounded text-green-800 dark:text-green-300">
+                            {suggestion.replacement}
+                          </code>
+                        </div>
+                        
+                        <div className="text-xs text-[var(--color-text-secondary)]">
+                          {suggestion.explanation}
+                        </div>
+                        
+                        <div className="flex gap-2">
+                          <Button 
+                            size="sm" 
+                            className="flex-1 bg-[var(--color-accent)] hover:bg-[var(--color-accent)]/90"
+                            onClick={() => applySuggestion(suggestion)}
+                          >
+                            <CheckCircle className="h-3 w-3 mr-1" />
+                            Accept
+                          </Button>
+                          <Button 
+                            size="sm" 
+                            variant="outline" 
+                            className="flex-1"
+                            onClick={() => dismissSuggestion(suggestion.id)}
+                          >
+                            Ignore
+                          </Button>
+                        </div>
                       </div>
-                      
-                      <div className="text-xs text-[var(--color-text-secondary)]">
-                        {suggestion.explanation}
-                      </div>
-                      
-                      <div className="flex gap-2">
-                        <Button 
-                          size="sm" 
-                          className="flex-1 bg-[var(--color-accent)] hover:bg-[var(--color-accent)]/90"
-                          onClick={() => applySuggestion(suggestion)}
-                        >
-                          <CheckCircle className="h-3 w-3 mr-1" />
-                          Accept
-                        </Button>
-                        <Button 
-                          size="sm" 
-                          variant="outline" 
-                          className="flex-1"
-                          onClick={() => dismissSuggestion(suggestion.id)}
-                        >
-                          Ignore
-                        </Button>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-              
-              {suggestions.length === 0 && (
+                    </CardContent>
+                  </Card>
+                ))
+              ) : (
                 <div className="text-center py-8">
                   <CheckCircle className="h-8 w-8 text-[var(--color-accent)] mx-auto mb-2" />
                   <p className="text-sm text-[var(--color-text-secondary)]">

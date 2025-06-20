@@ -1,34 +1,26 @@
 # 1. Builder stage: Install all dependencies, copy source, and build the app
-FROM node:20-alpine AS builder
+FROM oven/bun:1 as builder
 WORKDIR /app
-RUN apk add --no-cache libc6-compat
-COPY package*.json ./
-RUN npm ci
+COPY package.json bun.lockb ./
+RUN bun install
 COPY . .
-RUN npm run build
+RUN bun run build
 
 # 2. Runner stage: Create a lean production image
-FROM node:20-alpine AS runner
+FROM oven/bun:1 as runner
 WORKDIR /app
+COPY --from=builder /app/package.json ./package.json
+COPY --from=builder /app/bun.lockb ./bun.lockb
+
+# Install production dependencies only
+RUN bun install --production
+
+COPY --from=builder /app/dist ./dist
 
 ENV NODE_ENV production
-
-RUN addgroup --system --gid 1001 nodejs
-RUN adduser --system --uid 1001 askleo
-
-# Copy production dependencies and package.json
-COPY package*.json ./
-RUN npm ci --omit=dev
-
-# Copy built app and start script from builder stage
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/package.json ./package.json
-
-USER askleo
-
-EXPOSE 8080
-
 ENV PORT 8080
 ENV HOST 0.0.0.0
 
-CMD ["npm", "start"]
+EXPOSE 8080
+
+CMD ["bun", "run", "dist/index.js"]

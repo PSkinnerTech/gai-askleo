@@ -1,4 +1,3 @@
-
 import Fastify from 'fastify';
 import cors from '@fastify/cors';
 import websocket from '@fastify/websocket';
@@ -18,11 +17,15 @@ async function buildServer() {
     credentials: true,
   });
 
-  // Register WebSocket support
-  await fastify.register(websocket);
+  // Register WebSocket support with options for proxy handling
+  await fastify.register(websocket, {
+    options: {
+      maxPayload: 1048576, // 1MB
+    }
+  });
 
   // Register routes
-  await fastify.register(websocketRoutes);
+  fastify.register(websocketRoutes);
 
   // Health check endpoint
   fastify.get('/health', async (request, reply) => {
